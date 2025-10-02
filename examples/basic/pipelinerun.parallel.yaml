@@ -1,0 +1,23 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  labels:
+    tekton.dev/pipeline: parallel
+  generateName: parallel- 
+  namespace: one
+spec:
+  params:
+  - name: message
+    value: kkk
+  - name: url
+    value: https://github.com/abavage/tools.git
+  pipelineRef:
+    name: parallel
+  taskRunTemplate:
+    serviceAccountName: pipeline
+  timeouts:
+    pipeline: 1h0m0s
+  workspaces:
+  - name: this-workspace
+    persistentVolumeClaim:
+      claimName: build

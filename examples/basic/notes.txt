@@ -1,0 +1,5 @@
+oc apply -f pipeline-parallel.yaml
+oc apply -f pvc.yaml
+
+# using create as it;s got a generateName
+oc create -f pipelinerun.parallel.yaml
