@@ -1,0 +1,60 @@
+# high level.
+
+three clusters
+
+   hub_cluster
+    |      |
+source + destination
+
+
+Hub cluster will run tekton and execute pipelines to perform trident-protect activities.
+
+1) flip / flop 
+   source -> destination -> promote -> source
+   no data is replicated back to source when running on destination
+
+2) full cut over
+   source -> destination -> promote 
+   delete amr on destination
+   create amr on source
+   replication is now destination -> source
+   patch schedules as required
+   how do we manage the AMR? 
+      in git and pull it in with a task and template it some how and use sed? 
+      needs the sourceApplicationUID to be populated in the right order eg the app is created on source - the AMR on destination needs the UID from source ...
+
+3) full cut back
+   destination -> source -> promote
+   delete amr on source
+   create amr on destination
+   replication is now source -> destination
+   patch schedules as required
+
+4) restore volumes in place either using trident apis or trident-protect apis
+
+5) Need some kind of a status pipeline or dashboard to display what is where 
+   needs to be grafana - will have to create that one
+
+6) How to monitor this setup
+   prometheus seems to be the go with alertmanager.
+
+
+Requirments
+Will use serviceAccount + token to login from hub -> source and hub -> destination using clusterRole to trident and trident-protect apis  
+The serviceAccount, secret, and CRB  will live in the customer namespace on each cluster
+pipleline/tasks will have common names - nothing unique so it's re-usable across projects
+
+Probably need an image with oc, trident, and trident-protect + all the standard things git, jq, curl etc
+
+
+Each customer will have an indvidual namespace on the hub cluster with the pipleline/tasks
+CPaaS will manage the pipleline/task in git and push via argo
+Customer has zero permissions to edit pipleline/task on the hub cluster - argo will revert it anyway
+Create the secret on the hub cluster with the token as a generic secret and pick it up in the task(s) - one secret multiple keys - git & argo should do this
+Will need to manually populate the token out of source & destination clusters or put it in vault and pull/push it that way.
+
+
+
+
+
+

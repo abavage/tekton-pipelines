@@ -1,0 +1,255 @@
+---
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: parallel
+spec:
+  params:
+    - name: message
+      type: string
+    #- name: url
+    #  type: string
+    - name: api1
+      type: string
+      default: "https://api.one.mwag.p3.openshiftapps.com:443"
+    - name: api2
+      type: string
+      default: "https://api.not.abcd.p3.openshiftapps.com:443"
+    - name: token
+      type: string
+  workspaces:
+    - name: this-workspace
+  tasks:
+  - name: ls
+    taskRef:
+      name: task-ls
+  - name: sleep-a
+    taskRef:
+      name: task-sleep-1
+    runAfter:
+      - ls
+  - name: sleep-b
+    taskRef:
+      name: task-sleep-2
+    runAfter:
+      - ls
+  - name: echo
+    taskRef:
+      name: task-echo
+    params:
+    - name: message
+      value: $(params.message)
+    runAfter:
+      - sleep-a
+      - sleep-b
+  - name: cluster1
+    taskRef:
+      name: oc-login-1
+    params:
+    - name: api1
+      value: $(params.api1)
+    - name: token
+      value: $(params.token)
+    runAfter:
+      - echo
+  - name: cluster2
+    taskRef:
+      name: oc-login-2
+    params:
+    - name: api1
+      value: $(params.api1)
+    - name: token
+      value: $(params.token)
+    - name: input-var
+      value: $(tasks.cluster1.results.dynamic-var)
+    runAfter:
+      - cluster1
+  - name: downward
+    taskRef:
+      name: downward-api
+    runAfter: 
+      - cluster2
+    
+  #- name: git-clone
+  #  taskRef:
+  #    name: git-clone
+  #  workspaces:
+  #  - name: source-one
+  #    workspace: this-workspace
+  #  params:
+  #  - name: message
+  #    value: $(params.message)
+  #  - name: url
+  #    value: $(params.url)
+  #  runAfter:
+  #    - echo
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: task-ls
+spec:
+  steps:
+  - name: ls
+    image: alpine:latest
+    command: [ls]
+    args: ["-l", "/"]
+
+---
+
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: task-sleep-1
+spec:
+  steps:
+  - name: sleep
+    image: alpine:latest
+    script: |
+      echo Starting to sleep...
+      sleep 5
+      echo Finished sleeping
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: task-sleep-2
+spec:
+  steps:
+  - name: sleep
+    image: alpine:latest
+    script: |
+      echo Starting to sleep 15...
+      sleep 8
+      echo Finished sleeping
+
+
+---
+
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: task-echo
+spec:
+  params:
+  - name: message
+    type: string
+  steps:
+  - name: echo
+    image: alpine:latest
+    command: [echo]
+    args: ["$(params.message)"]
+
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: oc-login-1
+spec:
+  results:
+    - name: dynamic-var
+      description: "passing the variable between tasks"
+  params:
+  - name: token
+    type: string
+  - name: api1
+    type: string
+  steps:
+  - name: oc-login
+    image: registry.redhat.io/openshift4/ose-cli-rhel9:v4.18.0-202609201015.p2.g3da7a06.assembly.stream.el9
+    script: |
+      #oc login $(params.api1) --token=$(params.token)
+      oc login $(params.api1) --token=$API1TOKEN
+      oc get nodes
+      oc get pods -l app=httpd 
+      #export THIS=85E36B7D-39C2-41C8-AD84-A61E8A566DE6
+      #echo $THIS
+      export THIS=$(for i in $(oc get nodes -o name) ; do oc get $i -o yaml | grep uid | awk -F: '{print $2}' | sed 's/ //g' ; done | head -1)
+      echo -n "$THIS" > $(results.dynamic-var.path)
+    env:
+      - name: API1TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: token
+            key: token
+
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: oc-login-2
+spec:
+  params:
+  - name: token
+    type: string
+  - name: api1
+    type: string
+  - name: input-var
+    type: string
+  steps:
+  - name: oc-login
+    image: registry.redhat.io/openshift4/ose-cli-rhel9:v4.18.0-202609201015.p2.g3da7a06.assembly.stream.el9
+    script: |
+      oc login $(params.api1) --token=$API1TOKEN
+      oc get pods -n openshift-logging
+      echo ""
+      echo "this is the env var --- $EXPORTED_ENV_VAR"
+    env:
+      - name: EXPORTED_ENV_VAR
+        value: $(params.input-var)
+      - name: API1TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: token
+            key: token
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: downward-api
+spec:
+  steps:
+    - name: print-pod-info
+      image: registry.redhat.io/openshift4/ose-cli-rhel9:v4.18.0-202609201015.p2.g3da7a06.assembly.stream.el9
+      env:
+        - name: MY_POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: MY_POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: MY_POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+      script: |
+        echo "Running in Pod: $MY_POD_NAME"
+        echo "Namespace: $MY_POD_NAMESPACE"
+        echo "Pod IP: $MY_POD_IP"
+
+#apiVersion: tekton.dev/v1beta1
+#kind: Task
+#metadata:
+#  name: git-clone
+#spec:
+#  workspaces:
+#  - name: source-one
+#  params:
+#  - name: message
+#    type: string
+#  - name: url
+#    type: string
+#  steps:
+#  - name: echo
+#    image: alpine/git:v2.49.1
+#    script: |
+#      cd $(workspaces.source-one.path)
+#      pwd
+#      echo $(params.message)
+#      echo $(params.url)
+#      sleep 60
+#      rm -rf catalog
+#      git clone -v $(params.url)
+#      ls -la 

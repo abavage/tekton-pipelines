@@ -2,11 +2,11 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: build
-  namespace: one
+  #namespace: one
 spec:
   accessModes:
   - ReadWriteOnce
   resources:
     requests:
       storage: 1Gi
-  storageClassName: ocs-external-storagecluster-ceph-rbd
+  #storageClassName: ocs-external-storagecluster-ceph-rbd

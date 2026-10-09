@@ -1,0 +1,277 @@
+---
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: anz-flip
+  namespace: andrew
+spec:
+  params:
+    - default: 'https://api.prod-q8c54.1361.p3.openshiftapps.com:443'
+      name: cluster1
+      type: string
+    - default: 'https://api.dr-q8c54-1.qcf3.p3.openshiftapps.com:443'
+      name: cluster2
+      type: string
+  tasks:
+    - name: oc-login-test-cluster1
+      params:
+        - name: cluster1
+          value: $(params.cluster1)
+      taskRef:
+        kind: Task
+        name: oc-login-test-cluster1
+    - name: oc-login-test-cluster2
+      params:
+        - name: cluster2
+          value: $(params.cluster2)
+      taskRef:
+        kind: Task
+        name: oc-login-test-cluster2
+
+    - name: check-primary-application
+      params:
+        - name: cluster1
+          value: $(params.cluster1)
+      taskRef:
+        kind: Task
+        name: check-primary-application
+      runAfter:
+        - oc-login-test-cluster1
+        - oc-login-test-cluster2
+
+    - name: promote-secondary
+      params:
+        - name: cluster2
+          value: $(params.cluster2)
+      taskRef:
+        kind: Task
+        name: promote-secondary
+      runAfter:
+        - check-primary-application
+
+    - name: check-pods-sleep
+      params:
+        - name: cluster2
+          value: $(params.cluster2)
+      taskRef:
+        kind: Task
+        name: check-pods-sleep
+      runAfter:
+        - promote-secondary
+
+    - name: flip-back-to-primary
+      params:
+        - name: cluster2
+          value: $(params.cluster2)
+      runAfter: 
+        - check-pods-sleep
+      taskRef:
+        kind: Task
+        name: flip-back-to-primary
+
+    - name: downward
+      runAfter:
+        - check-primary-application
+      taskRef:
+        kind: Task
+        name: downward-api
+  workspaces:
+    - name: this-workspace
+
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: oc-login-test-cluster1
+spec:
+  results:
+    - name: dynamic-var
+      description: "passing the variable between tasks"
+  params:
+  - name: cluster1
+    type: string
+  steps:
+  - name: oc-login
+    image: image-registry.openshift-image-registry.svc:5000/andrew/base-image:v0.0.6
+    script: |
+      oc login $(params.cluster1) --token=$CLUSTER_CREDENTIALS
+
+    env:
+      - name: CLUSTER_CREDENTIALS
+        valueFrom:
+          secretKeyRef:
+            name: cluster-credentials
+            key: cluster1
+
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: oc-login-test-cluster2
+spec:
+  results:
+    - name: dynamic-var
+      description: "passing the variable between tasks"
+  params:
+  - name: cluster2
+    type: string
+  steps:
+  - name: oc-login
+    image: image-registry.openshift-image-registry.svc:5000/andrew/base-image:v0.0.6
+    script: |
+      oc login $(params.cluster2) --token=$CLUSTER_CREDENTIALS
+
+    env:
+      - name: CLUSTER_CREDENTIALS
+        valueFrom:
+          secretKeyRef:
+            name: cluster-credentials
+            key: cluster2
+
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: check-primary-application
+spec:
+  #results:
+  #  - name: dynamic-var
+  #    description: "passing the variable between tasks"
+  params:
+  - name: cluster1
+    type: string
+  steps:
+  - name: oc-login
+    image: image-registry.openshift-image-registry.svc:5000/andrew/base-image:v0.0.6
+    script: |
+      oc login $(params.cluster1) --token=$CLUSTER_CREDENTIALS
+      
+      ## add an if confition here to fail if these are not Healthy Protected
+      oc get application one -o json -n application-api | jq -r '.status.protectionHealthState, .status.protectionState'
+
+    env:
+      - name: CLUSTER_CREDENTIALS
+        valueFrom:
+          secretKeyRef:
+            name: cluster-credentials
+            key: cluster1
+
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: promote-secondary
+spec:
+  params:
+  - name: cluster2
+    type: string
+  steps:
+  - name: oc-login
+    image: image-registry.openshift-image-registry.svc:5000/andrew/base-image:v0.0.6
+    script: |
+      oc login $(params.cluster2) --token=$CLUSTER_CREDENTIALS
+     
+      # add an if condition to conform both are Established  - if not fail here
+      oc get amr application-api-amr -n application-api -o json | jq '.spec.desiredState, .status.state'     
+
+      # patch the amr
+      oc patch amr application-api-amr -n application-api --type=merge -p '{"spec":{"desiredState":"Promoted"}}'
+
+      # wait here till the amr is promoted -- both need to be promoted
+      oc get amr application-api-amr -n application-api -o json | jq '.spec.desiredState, .status.state'
+
+      echo ""
+      #echo "this is the env var --- $EXPORTED_ENV_VAR"
+    env:
+      - name: CLUSTER_CREDENTIALS
+        valueFrom:
+          secretKeyRef:
+            name: cluster-credentials
+            key: cluster2
+
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: check-pods-sleep
+spec:
+  params:
+  - name: cluster2
+    type: string
+  steps:
+  - name: oc-login
+    image: image-registry.openshift-image-registry.svc:5000/andrew/base-image:v0.0.6
+    script: |
+      oc login $(params.cluster2) --token=$CLUSTER_CREDENTIALS
+      
+      # if condition wait till the pods are running
+      sleep 120
+      oc get pods -n application-api
+
+      #echo ""
+      #echo "this is the env var --- $EXPORTED_ENV_VAR"
+    env:
+      - name: CLUSTER_CREDENTIALS
+        valueFrom:
+          secretKeyRef:
+            name: cluster-credentials
+            key: cluster2
+
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: flip-back-to-primary
+spec:
+  params:
+  - name: cluster2
+    type: string
+  steps:
+  - name: oc-login
+    image: image-registry.openshift-image-registry.svc:5000/andrew/base-image:v0.0.6
+    script: |
+      oc login $(params.cluster2) --token=$CLUSTER_CREDENTIALS
+
+      # patch the amr
+      oc patch amr application-api-amr -n application-api --type=merge -p '{"spec":{"desiredState":"Established"}}'
+
+      # add if confition make sure not pods are running
+      oc get pods -n application-api
+
+      #echo ""
+      #echo "this is the env var --- $EXPORTED_ENV_VAR"
+    env:
+      - name: CLUSTER_CREDENTIALS
+        valueFrom:
+          secretKeyRef:
+            name: cluster-credentials
+            key: cluster2
+
+
+
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: downward-api
+spec:
+  steps:
+    - name: print-pod-info
+      image: registry.redhat.io/openshift4/ose-cli-rhel9:v4.18.0-202609201015.p2.g3da7a06.assembly.stream.el9
+      env:
+        - name: MY_POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: MY_POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: MY_POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+      script: |
+        echo "Running in Pod: $MY_POD_NAME"
+        echo "Namespace: $MY_POD_NAMESPACE"
+        echo "Pod IP: $MY_POD_IP"
